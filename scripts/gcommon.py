@@ -189,10 +189,18 @@ def update_cells(sheets, cells_map: dict, sheet_id: str = DEFAULT_SHEET_ID, tab:
         {"range": f"{tab}!{col_row}", "values": [[val]]}
         for col_row, val in cells_map.items()
     ]
-    sheets.spreadsheets().values().batchUpdate(
-        spreadsheetId=sheet_id,
-        body={"valueInputOption": "RAW", "data": data},
-    ).execute()
+    for attempt in range(4):
+        try:
+            svc = sheets if attempt == 0 else get_services()[1]
+            svc.spreadsheets().values().batchUpdate(
+                spreadsheetId=sheet_id,
+                body={"valueInputOption": "RAW", "data": data},
+            ).execute()
+            return
+        except Exception:
+            if attempt == 3:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def resolve_project_folder(drive, sheets, row: int, project_arg: str = "") -> tuple[str, str]:
@@ -218,34 +226,50 @@ def resolve_project_folder(drive, sheets, row: int, project_arg: str = "") -> tu
 
 
 def list_folder_files(drive, folder_id: str) -> dict:
-    out = {}
-    page_token = None
-    while True:
-        res = drive.files().list(
-            q=f"'{folder_id}' in parents and trashed = false",
-            fields="nextPageToken, files(id,name,size,mimeType,modifiedTime)",
-            pageSize=500,
-            pageToken=page_token,
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-        ).execute()
-        for f in res.get("files") or []:
-            out[f["name"]] = f
-        page_token = res.get("nextPageToken")
-        if not page_token:
-            break
-    return out
+    for attempt in range(4):
+        try:
+            svc = drive if attempt == 0 else get_services()[0]
+            out = {}
+            page_token = None
+            while True:
+                res = svc.files().list(
+                    q=f"'{folder_id}' in parents and trashed = false",
+                    fields="nextPageToken, files(id,name,size,mimeType,modifiedTime)",
+                    pageSize=500,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                ).execute()
+                for f in res.get("files") or []:
+                    out[f["name"]] = f
+                page_token = res.get("nextPageToken")
+                if not page_token:
+                    break
+            return out
+        except Exception:
+            if attempt == 3:
+                raise
+            time.sleep(2 ** attempt)
+    return {}
 
 
 def download_drive_file(drive, file_id: str, out_path: str):
     dest = Path(out_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    req = drive.files().get_media(fileId=file_id, supportsAllDrives=True)
-    with io.FileIO(str(dest), "wb") as fh:
-        downloader = MediaIoBaseDownload(fh, req, chunksize=8 * 1024 * 1024)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
+    for attempt in range(4):
+        try:
+            svc = drive if attempt == 0 else get_services()[0]
+            req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
+            with io.FileIO(str(dest), "wb") as fh:
+                downloader = MediaIoBaseDownload(fh, req, chunksize=8 * 1024 * 1024)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+            return
+        except Exception:
+            if attempt == 3:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def upsert_file(drive, folder_id: str, local_path: str, remote_name: str = "", mime_type: str = "application/octet-stream") -> str:
