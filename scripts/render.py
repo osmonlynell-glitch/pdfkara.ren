@@ -169,7 +169,8 @@ def main():
     update_cells(sheets, {
         f"C{args.row}": folder_url(proj_id),
         f"F{args.row}": vid_url,
-        f"B{args.row}": "Video",
+        f"B{args.row}": "Done",
+        f"G{args.row}": f"✅ Hoàn tất Video 16:9 ({dur_s:.1f}s)",
     })
     print(f"Completed 16:9 Karaoke MP4 for row {args.row} ({proj_name}): {vid_url}")
 

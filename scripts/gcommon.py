@@ -329,7 +329,7 @@ def cli_poll_html(args):
     for r in rows:
         if dispatched >= args.max_dispatch:
             break
-        if r["status"] == "Html" and r["project_url"] and r["html_url"] and not r["video_url"] and repo:
+        if r["status"] in ("Html", "Video") and r["project_url"] and r["html_url"] and not r["video_url"] and repo:
             dispatch_github_workflow(
                 repo,
                 "render.yml",
