@@ -1,0 +1,97 @@
+name: render
+
+on:
+  workflow_dispatch:
+    inputs:
+      row:
+        description: "Row number in PIPELINE_VIDEO_KARAOKE!TASKS (>= 2)"
+        required: true
+      project_name:
+        description: "Project folder name or Drive Folder URL (Column C)"
+        required: true
+      html_url:
+        description: "URL of HyperFrames HTML file (Column E)"
+        required: true
+      quality:
+        description: "draft | looks | delivery"
+        required: false
+        default: "looks"
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: ren-row-${{ inputs.row || 'schedule-poll' }}
+  cancel-in-progress: false
+
+env:
+  HYPERFRAMES_VERSION: "0.9.37"
+  DO_NOT_TRACK: "1"
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GOOGLE_SA_KEY: ${{ secrets.GOOGLE_SA_KEY }}
+      GH_TOKEN: ${{ secrets.GH_DISPATCH_PAT }}
+      BRIDGE_UPLOAD_URL: ${{ secrets.BRIDGE_UPLOAD_URL }}
+      BRIDGE_UPLOAD_SECRET: ${{ secrets.BRIDGE_UPLOAD_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -q -r requirements.txt
+
+      - name: Backup poll Html rows on schedule
+        if: github.event_name == 'schedule'
+        run: python scripts/gcommon.py poll-html-rows --max-dispatch 5
+
+      - uses: actions/setup-node@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          node-version: "22"
+
+      - name: Install FFmpeg
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+
+      - name: Cache HyperFrames headless browser
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/hyperframes
+            ~/.cache/puppeteer
+          key: pdfkara-hf-browser-${{ env.HYPERFRAMES_VERSION }}-${{ runner.os }}
+
+      - name: Install HyperFrames CLI & browser
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          npm install -g "hyperframes@${HYPERFRAMES_VERSION}" --no-fund --no-audit
+          hyperframes browser ensure
+
+      - name: Render 16:9 Karaoke MP4 & upload to Drive
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          IN_ROW: ${{ inputs.row }}
+          IN_PROJ: ${{ inputs.project_name }}
+          IN_HTML: ${{ inputs.html_url }}
+          IN_QUAL: ${{ inputs.quality }}
+        run: |
+          python -u scripts/render.py \
+            --row "${IN_ROW}" \
+            --project "${IN_PROJ}" \
+            --html "${IN_HTML}" \
+            --quality "${IN_QUAL:-looks}"
