@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 import argparse
 import json
 import re
@@ -36,6 +37,65 @@ def extract_html_duration(html_path: Path) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def sanitize_hyperframes_determinism(html_path: Path) -> bool:
+    """Ensure composition passes HyperFrames 0.9.37 deterministic lint across parallel workers."""
+    src = html_path.read_text(encoding="utf-8", errors="ignore")
+    orig = src
+
+    # 1. Strip non-deterministic CSS transitions inside <style> blocks
+    src = re.sub(
+        r"(<style[^>]*>)(.*?)(</style>)",
+        lambda m: m.group(1) + re.sub(r"transition\s*:[^;\}]+;?", "", m.group(2)) + m.group(3),
+        src,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # 2. If HTML used a wall-clock rAF camera loop, upgrade camera pan to pure deterministic f(t) inside update(t)
+    if "requestAnimationFrame" in src or "performance.now" in src:
+        det_cam = (
+            '    if (ai >= 0 && sheets[page]) {\n'
+            '      var _ms = Math.max(0, SHEET_H[page] - FRAME_H);\n'
+            '      var _curY = Math.max(0, Math.min(_ms, ITEMS[ai].cy - FOCUS_Y));\n'
+            '      var _prevY = (ai > 0 && ITEMS[ai - 1].p === page) ? Math.max(0, Math.min(_ms, ITEMS[ai - 1].cy - FOCUS_Y)) : _curY;\n'
+            '      var _u = Math.max(0, Math.min(1, (t - ITEMS[ai].s) / 0.42));\n'
+            '      var _ez = _u * _u * (3 - 2 * _u);\n'
+            '      camCur = _prevY + (_curY - _prevY) * _ez;\n'
+            '      camTarget = _curY;\n'
+            '      sheets[page].style.transform = "translate3d(0, " + (-camCur).toFixed(2) + "px, 0)";\n'
+            '    } else if (sheets[page]) {\n'
+            '      sheets[page].style.transform = "translate3d(0, " + (-camTarget).toFixed(2) + "px, 0)";\n'
+            '    }\n'
+        )
+        if 'prog.style.width =' in src and 'var _ez = _u * _u' not in src:
+            src = src.replace('    prog.style.width =', det_cam + '    prog.style.width =', 1)
+
+        # Remove wall-clock rAF tick() block
+        src = re.sub(
+            r"function\s+tick\s*\(\)\s*\{.*?\}\s*requestAnimationFrame\s*\(\s*tick\s*\)\s*;",
+            "",
+            src,
+            flags=re.DOTALL,
+        )
+        # Replace any wall-clock fallback shim using performance.now/rAF with pure deterministic seek shim
+        src = re.sub(
+            r"var\s+shim\s*=\s*\{.*?\};\s*window\.__timelines\[\"main\"\]\s*=\s*shim;",
+            (
+                'var shim = { _t: 0, duration: function () { return TOTAL_S; }, '
+                'time: function () { return this._t; }, '
+                'seek: function (t) { this._t = Math.max(0, Math.min(TOTAL_S, t)); update(this._t); return this; }, '
+                'play: function () { return this; }, pause: function () { return this; }, '
+                'eventCallback: function () { return this; } };\n    window.__timelines["main"] = shim;'
+            ),
+            src,
+            flags=re.DOTALL,
+        )
+
+    if src != orig:
+        html_path.write_text(src, encoding="utf-8")
+        return True
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--row", type=int, required=True)
@@ -56,8 +116,8 @@ def main():
                 fileId=existing_vid_id, fields="id,size,trashed", supportsAllDrives=True
             ).execute()
             if not vmeta.get("trashed") and int(vmeta.get("size") or 0) > 10_000:
-                if row_info["status"] != "Video":
-                    update_cells(sheets, {f"B{args.row}": "Video"})
+                if row_info["status"] != "Done":
+                    update_cells(sheets, {f"B{args.row}": "Done"})
                 print(f"Row {args.row}: valid video already exists ({row_info['video_url']}); skipping.")
                 return
         except Exception:
@@ -113,7 +173,9 @@ def main():
     if not dur_s:
         dur_s = extract_html_duration(index_html) or probe_audio_duration(voice_wav)
 
-    # 6. Lint composition & render 1920x1080 16:9 silent MP4 via HyperFrames
+    # 6. Ensure deterministic timeline contract, lint composition & render 1920x1080 16:9 silent MP4 via HyperFrames
+    if sanitize_hyperframes_determinism(index_html):
+        print("Normalized HTML timeline for deterministic multi-worker HyperFrames capture.")
     lint_proc = subprocess.run(
         ["hyperframes", "lint", str(proj_dir), "--json"],
         capture_output=True,

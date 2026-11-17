@@ -63,6 +63,10 @@ def extract_drive_id(url_or_id: str) -> str:
     return ""
 
 
+def folder_url(folder_id: str) -> str:
+    return f"https://drive.google.com/drive/folders/{folder_id}"
+
+
 def file_view_url(file_id: str) -> str:
     return f"https://drive.google.com/file/d/{file_id}/view"
 
