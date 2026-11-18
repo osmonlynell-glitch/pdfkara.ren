@@ -349,15 +349,48 @@ def dispatch_github_workflow(repo_full_name: str, workflow_file: str, inputs: di
             raise RuntimeError(f"workflow_dispatch unexpected HTTP {resp.status}")
 
 
+def list_active_render_titles(repo_full_name: str) -> list[str]:
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token or not repo_full_name:
+        return []
+    titles = []
+    for st in ("in_progress", "queued"):
+        url = (
+            f"https://api.github.com/repos/{repo_full_name}/actions/workflows/render.yml/runs"
+            f"?status={st}&event=workflow_dispatch&per_page=30"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            for run in data.get("workflow_runs") or []:
+                titles.append(str(run.get("display_title") or run.get("name") or ""))
+        except Exception as exc:
+            print(f"Warning checking active render runs ({st}): {exc}", flush=True)
+    return titles
+
+
 def cli_poll_html(args):
     _, sheets = get_services()
     repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
     rows = list_all_task_rows(sheets)
+    active_titles = list_active_render_titles(repo)
     dispatched = 0
     for r in rows:
         if dispatched >= args.max_dispatch:
             break
         if r["status"] in ("Html", "Video") and r["project_url"] and r["html_url"] and not r["video_url"] and repo:
+            tag = f"R{r['row']}"
+            if any(t == f"Render {tag}" or f"{tag} " in t or t.endswith(tag) for t in active_titles):
+                print(f"Skipping row {r['row']}: render.yml already active")
+                continue
             dispatch_github_workflow(
                 repo,
                 "render.yml",
